@@ -1,0 +1,21 @@
+# 运行期与本地文件（不发布）
+*.log
+logs/
+.env
+.env.*
+*.key
+*.pem
+*_token*
+*token*.txt
+*.lock
+*.tmp
+~$*
+.DS_Store
+Thumbs.db
+desktop.ini
+__pycache__/
+node_modules/
+*.bak
+*.orig
+# 运行时状态（锁/游标等）
+._*
