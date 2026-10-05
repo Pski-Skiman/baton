@@ -79,6 +79,19 @@ class RuntimeTests(unittest.TestCase):
         p.write_text(json.dumps(state), encoding='utf-8')
         return p
 
+    def test_signature_missing_is_reported_per_file(self):
+        signup = self.root / 'signup.md'
+        signup.write_text('| **other** | active |', encoding='utf-8')
+        with patch.object(watch.time, 'monotonic', side_effect=[0, 0, 0, 1]), patch.object(watch.time, 'sleep'):
+            rc, events = run_main(watch, ['--dir', str(self.root), '--me', 'me',
+                '--files', 'topic.md', '--files', 'signup.md', '--party', 'other',
+                '--window', '1', '--interval', '1'])
+        self.assertEqual(rc, 0)
+        start = events[0]
+        self.assertEqual(start['window_sec'], 1)
+        self.assertEqual(start['signature_missing'], [{'party': 'other', 'file': 'topic.md', 'status': 'no-matching-signature'}])
+        self.assertEqual(events[-1]['event'], 'WINDOW_SATISFIED')
+
     def test_invalid_owner_no_identity_collision(self):
         self.assertNotEqual(plan.plan_path(str(self.root), 'a-b'), plan.plan_path(str(self.root), 'ab'))
         self.assertEqual(run_main(plan, self.args('status', '--who', '../bad'))[0], 1)

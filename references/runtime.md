@@ -12,7 +12,7 @@ Python标准库脚本随此技能自足发布；不依赖另装anti-interruption
 python scripts/quiet_window_watch.py --dir <共享目录> --me <本人前缀> --files <话题文件> --files <事项文件> --window 300 --interval 10 --max-minutes 10
 ```
 
-显式指定当前关键载体；所有文件必须可读。window/interval/max-minutes必须正数；五分钟中断约束用window=300。`--party`只用于补充检测本人以外的签到行，不能证明在场。私有客户端记忆不计入协作推进。
+显式指定当前关键载体；所有文件必须可读。window/interval/max-minutes必须正数；五分钟收尾及中断约束均用window=300；其它前提满足后开始，检测期间继续消费新输入和巡检工作。`--party`只用于补充检测本人以外的签到行，不能证明在场。私有客户端记忆不计入协作推进。
 
 `--files`、`--watch-files`、`--party`、`--ignore-prefix`均需重复传参，不能在一个参数后用空格列多个值；`--party`匹配实际签到表名字，不是消息ID前缀。
 

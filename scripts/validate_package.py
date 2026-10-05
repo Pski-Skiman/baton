@@ -2,6 +2,7 @@
 """Read-only checks for the full repository, not a runtime installation."""
 import argparse
 import ast
+import json
 from pathlib import Path
 import re
 import sys
@@ -12,7 +13,8 @@ def validate(root):
     for name in ('VERSION', 'SKILL.md', 'README.md', 'CHANGELOG.md', 'AGENTS.md',
                  'CONTRIBUTING.md', 'references/runtime.md', 'docs/quickstart.md',
                  'docs/tools.md', 'docs/troubleshooting.md', 'scripts/attribution.py',
-                 'scripts/quiet_window_watch.py', 'scripts/shutdown_plan.py', 'tests/test_runtime.py'):
+                 'scripts/quiet_window_watch.py', 'scripts/shutdown_plan.py', 'tests/test_runtime.py', 'tests/test_resume.py', 'scripts/check_resume.py',
+                 'references/client-continuity.md', 'docs/resume-checkpoint.example.json'):
         if not (root / name).is_file():
             failures.append('missing: ' + name)
     if failures:
@@ -32,7 +34,7 @@ def validate(root):
         rel = p.relative_to(root)
         if any(x in ('.git', '__pycache__', '.baton-state', '.state') for x in rel.parts) or not p.is_file():
             continue
-        if p.suffix not in ('.md', '.py') and p.name not in ('VERSION', '.gitignore'):
+        if p.suffix not in ('.md', '.py', '.json') and p.name not in ('VERSION', '.gitignore'):
             continue
         count += 1
         raw = p.read_bytes()
@@ -45,6 +47,11 @@ def validate(root):
             failures.append('encoding/control character: ' + str(rel))
         if re.search(r'\r(?!\n)', text):
             failures.append('bare CR: ' + str(rel))
+        if p.suffix == '.json':
+            try:
+                json.loads(text)
+            except ValueError:
+                failures.append('invalid JSON: ' + str(rel))
         if p.suffix == '.py':
             try:
                 ast.parse(text, filename=str(rel), feature_version=(3, 9))

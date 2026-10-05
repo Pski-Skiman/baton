@@ -81,8 +81,8 @@ def main():
     ap.add_argument("--files", action="append", default=[], help="共享载体（可重复；不给则扫目录所有 .md）")
     ap.add_argument("--party", action="append", default=[], help="他方名，用于署名区探测（可重复）")
     ap.add_argument("--party-line", default=DEFAULT_PARTY_LINE, help="署名行正则模板，{party} 为占位")
-    ap.add_argument("--window", type=int, default=300)
-    ap.add_argument("--interval", type=int, default=60)
+    ap.add_argument("--window", type=int, default=300, help="连续安静窗口秒数；五分钟为300")
+    ap.add_argument("--interval", type=int, default=60, help="采样间隔秒数")
     ap.add_argument("--max-minutes", type=int, default=30)
     ap.add_argument("--ignore-prefix", action="append", default=[])
     a = ap.parse_args()
@@ -134,12 +134,14 @@ def main():
             note="基线就有文件读不到 ⇒ 拒绝运行（无证据不得判窗口）")
         return 1
 
-    missing_sig = [q for q in parties if any(base[p]["sigs"].get(q) is None for p in paths)]
+    missing_sig = [{"party": q, "file": os.path.relpath(p, root_abs), "status": "no-matching-signature"}
+                   for p in paths for q in parties if base[p]["sigs"].get(q) is None]
     last_other = time.monotonic()
-    log("START", version="0.3", me=me, window_sec=a.window, interval_sec=a.interval,
+    log("START", version="0.4", me=me, window_sec=a.window, interval_sec=a.interval,
         max_minutes=a.max_minutes, files=len(paths), parties=parties,
         baseline_ids=sum(len(base[p]["snap"]["ids"]) for p in paths),
-        warn=("署名行未匹配到：" + ",".join(missing_sig)) if missing_sig else None)
+        signature_missing=missing_sig,
+        warn="按文件列出未匹配署名；非签到文件可不适用，全文归属比较仍启用" if missing_sig else None)
 
     deadline = time.monotonic() + a.max_minutes * 60
     try:

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "party": "your-party",
+  "round": "R-current",
+  "status": "active",
+  "verified_state": "实际已核验的产物及范围",
+  "independent_work": "仍能独立做的工作；没有则明确写无",
+  "next_action": "下一步具体动作，不能只写继续",
+  "waiting_for": "等待谁以及解除条件；没有则写无",
+  "limitations": "未验证内容与客户端续轮能力",
+  "entry": "恢复入口.md",
+  "task_state": "项目当前任务.md",
+  "handoff": "最近交接.md",
+  "cursor": {"file": "本轮话题.md", "id": "last-processed-id"},
+  "sha256": {
+    "恢复入口.md": "替换为实际文件64位SHA-256",
+    "项目当前任务.md": "替换为实际文件64位SHA-256",
+    "最近交接.md": "替换为实际文件64位SHA-256",
+    "本轮话题.md": "替换为实际文件64位SHA-256"
+  }
+}
