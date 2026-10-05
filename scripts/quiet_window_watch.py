@@ -136,7 +136,7 @@ def main():
 
     missing_sig = [q for q in parties if any(base[p]["sigs"].get(q) is None for p in paths)]
     last_other = time.monotonic()
-    log("START", version="0.2", me=me, window_sec=a.window, interval_sec=a.interval,
+    log("START", version="0.3", me=me, window_sec=a.window, interval_sec=a.interval,
         max_minutes=a.max_minutes, files=len(paths), parties=parties,
         baseline_ids=sum(len(base[p]["snap"]["ids"]) for p in paths),
         warn=("署名行未匹配到：" + ",".join(missing_sig)) if missing_sig else None)

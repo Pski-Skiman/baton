@@ -4,6 +4,7 @@
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import sys
@@ -34,6 +35,8 @@ WEAK_REASONS = {"再等等", "再等待", "等等", "再等", "继续等", "稍�
 
 def state_dir(d):
     sd = os.path.join(d, ".baton-state")
+    if not inside_root(d, sd):
+        raise ValueError("state directory outside shared root")
     os.makedirs(sd, exist_ok=True)
     return sd
 
@@ -41,7 +44,10 @@ def state_dir(d):
 def plan_path(d, who):
     if not re.fullmatch(r"[A-Za-z0-9_-]+", who):
         raise ValueError("who must contain ASCII letters, digits, underscores or hyphens")
-    return os.path.join(state_dir(d), "plan_%s.json" % who.lower())
+    path = os.path.join(state_dir(d), "plan_%s.json" % who.lower())
+    if not inside_root(d, path) or not inside_root(d, path + '.lock'):
+        raise ValueError("plan or lock file outside shared root")
+    return path
 
 
 def lock_path(d, who):
@@ -81,7 +87,8 @@ class PlanLock:
                         info = json.load(f)
                 except Exception as e:
                     err = e.__class__.__name__
-                if not isinstance(info, dict) or not isinstance(info.get("at"), (int, float)):
+                if (not isinstance(info, dict) or type(info.get("at")) not in (int, float) or
+                        not math.isfinite(info['at'])):
                     # 解析失败 ⇒ 只怀疑，不删
                     self.note = {"kind": "STALE_LOCK_SUSPECT", "reason": "lock-unparsable:%s" % err,
                                  "path": self.p,
@@ -120,24 +127,77 @@ class PlanLock:
         self.held = False
 
 
+def inside_root(root, path):
+    try:
+        base = os.path.realpath(root)
+        return os.path.commonpath([base, os.path.realpath(path)]) == base
+    except ValueError:
+        return False
+
+
+def valid_snapshot(snap):
+    """Validate persisted attribution data before compare can consume it."""
+    if not isinstance(snap, dict):
+        return False
+    hashes = (snap.get('pre'), snap.get('text_hash'))
+    if not all(isinstance(h, str) and re.fullmatch(r'[0-9a-f]{64}', h) for h in hashes):
+        return False
+    if type(snap.get('length')) is not int or snap['length'] < 0:
+        return False
+    blocks, order, ids = snap.get('blocks'), snap.get('order'), snap.get('ids')
+    if not isinstance(blocks, dict) or not isinstance(order, list) or not isinstance(ids, list):
+        return False
+    if not all(isinstance(i, str) and re.fullmatch(r'[A-Za-z0-9_-]+', i) for i in order + ids):
+        return False
+    if ids != sorted(set(order)) or set(blocks) != set(ids):
+        return False
+    return all(isinstance(values, list) and len(values) == order.count(i) and
+               all(isinstance(h, str) and re.fullmatch(r'[0-9a-f]{64}', h) for h in values)
+               for i, values in blocks.items())
+
+
+def valid_state(st):
+    if not isinstance(st, dict) or st.get('status') not in ('armed', 'cancelled'):
+        return False
+    if type(st.get('_ver')) is not int or st['_ver'] < 0:
+        return False
+    if not isinstance(st.get('history'), list) or not all(isinstance(x, dict) for x in st['history']):
+        return False
+    if not isinstance(st.get('who'), str) or not re.fullmatch(r'[A-Za-z0-9_-]+', st['who']):
+        return False
+    if st['status'] == 'cancelled':
+        return True
+    if st.get('purpose') not in ('interrupt', 'reminder'):
+        return False
+    if type(st.get('renewals')) is not int or not 0 <= st['renewals'] <= MAX_RENEW:
+        return False
+    if type(st.get('due_epoch')) not in (int, float) or not math.isfinite(st['due_epoch']) or st['due_epoch'] <= 0:
+        return False
+    if not isinstance(st.get('due_at'), str) or not st['due_at'].strip():
+        return False
+    for field in ('round', 'me_prefix', 'basis', 'basis_file', 'basis_hash'):
+        if not isinstance(st.get(field), str):
+            return False
+    files, snaps = st.get('watch_files'), st.get('snapshots')
+    if not isinstance(files, list) or not all(isinstance(f, str) and f.strip() for f in files):
+        return False
+    if len(files) != len(set(files)) or not isinstance(snaps, dict):
+        return False
+    if not set(snaps).issubset(files) or not all(valid_snapshot(s) for s in snaps.values()):
+        return False
+    if st['purpose'] == 'interrupt' and (not files or not st['round'].strip() or
+            not re.fullmatch(r'[A-Za-z0-9_]+', st['me_prefix']) or
+            not (st['basis'].strip() or st['basis_file'])):
+        return False
+    return True
+
+
 def load(p):
     if os.path.exists(p):
         try:
             with open(p, "r", encoding="utf-8") as f:
                 st = json.load(f)
-            if not isinstance(st, dict):
-                return None
-            if not isinstance(st.get("history", []), list) or not isinstance(st.get("_ver", 0), int):
-                return None
-            if st.get("status") == "armed":
-                if (not isinstance(st.get("watch_files"), list) or
-                    not all(isinstance(x, str) for x in st["watch_files"]) or
-                    not isinstance(st.get("snapshots"), dict) or
-                    not all(isinstance(v, dict) and isinstance(v.get("blocks"), dict)
-                            for v in st["snapshots"].values()) or
-                    not isinstance(st.get("renewals", 0), int)):
-                    return None
-            return st
+            return st if valid_state(st) else None
         except Exception:
             return None          # 解码失败 ⇒ 明确区分，不当成"空计划"
     return {}
@@ -259,8 +319,12 @@ def main():
             out({"event": "REFUSED", "reason": "interrupt-requires-round-prefix-watch-set-and-basis"})
             return 1
 
-    p = plan_path(a.dir, a.who)
-    lk = PlanLock(a.dir, a.who)
+    try:
+        p = plan_path(a.dir, a.who)
+        lk = PlanLock(a.dir, a.who)
+    except ValueError:
+        out({"event": "REFUSED", "reason": "state-directory-outside-shared-root"})
+        return 1
 
     def begin():
         ok, why = lk.acquire()
@@ -277,6 +341,16 @@ def main():
             lk.release()
             out({"event": "STATE_UNREADABLE", "action": "计划文件解码失败；不写入、不给结论"})
             return None, None
+        if st and st['who'].lower() != a.who.lower():
+            lk.release()
+            out({"event": "STATE_OWNER_MISMATCH", "action": "计划身份与调用者不一致；保留原件，不读取监测文件"})
+            return None, None
+        if st.get('status') == 'armed':
+            saved_paths = st['watch_files'] + ([st['basis_file']] if st['basis_file'] else [])
+            if any(not inside_root(a.dir, os.path.join(a.dir, f)) for f in saved_paths):
+                lk.release()
+                out({"event": "STATE_PATH_OUTSIDE_ROOT", "action": "恢复路径越出共享目录；保留原件，不读取目录外文件"})
+                return None, None
         return st, (st.get("_ver") or 0)
 
     def commit(st, ver, event, extra=None):
@@ -308,7 +382,7 @@ def main():
                     out({"event": "REFUSED",
                          "reason": "--minutes 必须 >= %d（purpose=%s，收到 %d）" % (floor, a.purpose, a.minutes)})
                     return 1
-                watch = [norm_rel(a.dir, os.path.join(a.dir, f)) for f in a.watch_files]
+                watch = list(dict.fromkeys(norm_rel(a.dir, os.path.join(a.dir, f)) for f in a.watch_files))
                 snaps, problems = {}, []
                 for rel in watch:
                     fp = os.path.join(a.dir, rel)

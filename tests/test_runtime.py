@@ -139,6 +139,69 @@ class RuntimeTests(unittest.TestCase):
             self.assertEqual(rc, 1)
             self.assertEqual(events[-1]['event'], 'STATE_UNREADABLE')
 
+    def test_restored_empty_interrupt_set_refused(self):
+        p = self.arm_due()
+        state = json.loads(p.read_text(encoding='utf-8'))
+        state.update(watch_files=[], snapshots={})
+        p.write_text(json.dumps(state), encoding='utf-8')
+        before = p.read_bytes()
+        rc, events = run_main(plan, self.args('check'))
+        self.assertEqual((rc, events[-1]['event']), (1, 'STATE_UNREADABLE'))
+        self.assertEqual(before, p.read_bytes())
+
+    def test_restored_watch_and_basis_paths_refused_before_read(self):
+        p = self.arm_due()
+        state = json.loads(p.read_text(encoding='utf-8'))
+        for field in ('watch_files', 'basis_file'):
+            broken = dict(state)
+            broken[field] = ['../outside.md'] if field == 'watch_files' else '../outside.md'
+            if field == 'watch_files':
+                broken['snapshots'] = {'../outside.md': state['snapshots']['topic.md']}
+            p.write_text(json.dumps(broken), encoding='utf-8')
+            with patch.object(plan, 'read_once', side_effect=AssertionError('must not read watched paths')):
+                rc, events = run_main(plan, self.args('check'))
+            self.assertEqual((rc, events[-1]['event']), (1, 'STATE_PATH_OUTSIDE_ROOT'))
+
+    def test_restored_schema_corruption_is_structured_error(self):
+        p = self.arm_due()
+        original = json.loads(p.read_text(encoding='utf-8'))
+        variants = []
+        missing_display = dict(original)
+        missing_display.pop('due_at')
+        variants.append(missing_display)
+        for key, value in (('_ver', -1), ('renewals', True), ('due_epoch', float('nan')),
+                           ('me_prefix', []), ('status', 'invented')):
+            variants.append(dict(original, **{key: value}))
+        broken_snapshot = json.loads(json.dumps(original))
+        broken_snapshot['snapshots']['topic.md']['blocks'] = {'bad-id': 3}
+        variants.append(broken_snapshot)
+        for state in variants:
+            with self.subTest(state=state):
+                p.write_text(json.dumps(state), encoding='utf-8')
+                rc, events = run_main(plan, self.args('check'))
+                self.assertEqual((rc, events[-1]['event']), (1, 'STATE_UNREADABLE'))
+
+    def test_restored_owner_mismatch_refused(self):
+        p = self.arm_due()
+        state = json.loads(p.read_text(encoding='utf-8'))
+        state['who'] = 'someone-else'
+        p.write_text(json.dumps(state), encoding='utf-8')
+        rc, events = run_main(plan, self.args('status'))
+        self.assertEqual((rc, events[-1]['event']), (1, 'STATE_OWNER_MISMATCH'))
+
+    def test_reminder_without_watch_is_only_reminder(self):
+        rc, _ = run_main(plan, ['arm', '--dir', str(self.root), '--who', 'tester',
+                               '--purpose', 'reminder', '--minutes', '1'])
+        self.assertEqual(rc, 0)
+        p = Path(plan.plan_path(str(self.root), 'tester'))
+        state = json.loads(p.read_text(encoding='utf-8'))
+        state['due_epoch'] = 946684800
+        p.write_text(json.dumps(state), encoding='utf-8')
+        rc, events = run_main(plan, self.args('check'))
+        self.assertEqual((rc, events[-1]['event']), (0, 'TIMER_ELAPSED'))
+        self.assertEqual(events[-1]['purpose'], 'reminder')
+        self.assertEqual(events[-1]['checked_files'], [])
+
     def test_stale_foreign_and_malformed_lock_preserved(self):
         lock = plan.PlanLock(str(self.root), 'tester')
         self.assertTrue(lock.acquire(tries=1)[0])
@@ -149,7 +212,7 @@ class RuntimeTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             lock.release()
         self.assertTrue(Path(lock.p).exists())
-        for value in ('[]', '{"at":"bad"}', 'broken'):
+        for value in ('[]', '{"at":"bad"}', '{"at": -Infinity}', '{"at": true}', 'broken'):
             Path(lock.p).write_text(value, encoding='utf-8')
             self.assertEqual(other.acquire(tries=1)[1], 'STALE_LOCK_SUSPECT')
             self.assertEqual(Path(lock.p).read_text(encoding='utf-8'), value)
