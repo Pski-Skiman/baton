@@ -19,3 +19,5 @@ node_modules/
 *.orig
 # 运行时状态（锁/游标等）
 ._*
+.baton-state/
+.state/

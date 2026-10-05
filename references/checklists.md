@@ -1,98 +1,32 @@
-# 检查清单与可复制命令（模板）
+# 写入与归档检查
 
-> ⚠️ **这是模板**：下面的 `$ws` 是**占位变量**，**必须替换成你自己的共享目录**才能运行。
-> ```powershell
-> $ws = $env:WORKSPACE   # ← 先设为你的共享目录绝对路径，或直接写成该路径
-> ```
-> **不要把示例路径当成可直接执行的本机路径**。
+## 共享写入
 
-## 1. 写入后自检（存在 / 大小 / 关键内容 / 编码）
+全部参与方使用同一绝对路径锁。下例`$sharedRoot`需由实际共享目录赋值；抢锁失败保持他方文件不变。异常如实上抛，不把任何IOException都说成“锁已存在”。
 
 ```powershell
-$f = Join-Path $ws '话题文件.md'
-"存在 = $(Test-Path -LiteralPath $f)"
-"大小 = $((Get-Item -LiteralPath $f).Length) B"
-$text = [System.IO.File]::ReadAllText($f,[System.Text.Encoding]::UTF8)
-"含关键内容 = $($text.Contains('关键词'))"
-# 控制字符（U+0000–U+001F 除换行、U+007F）与裸 CR
-$bad = @()
-for($i=0;$i -lt $text.Length;$i++){
-  $k=[int][char]$text[$i]
-  if((($k -lt 0x20) -and $k -ne 0x0A -and $k -ne 0x0D) -or $k -eq 0x7F){ $bad += ('U+{0:X4}' -f $k) }
-  if($k -eq 0x0D){ $nx=-1; if($i+1 -lt $text.Length){ $nx=[int][char]$text[$i+1] }; if($nx -ne 0x0A){ $bad += 'bareCR' } }
-}
-if($bad.Count -gt 0){ "⚠️ 控制字符：$($bad -join ', ')" } else { "控制字符：无 ✅" }
-# BOM
-$bytes=[System.IO.File]::ReadAllBytes($f)
-"有 BOM = $(($bytes.Length -ge 3) -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)"
-```
-
-## 2. 指纹复算（**必须写清范围边界**）
-
-```powershell
-function Get-FileSha { param([string]$Path)
-  $raw=[System.IO.File]::ReadAllBytes($Path)
-  $a=[System.Security.Cryptography.SHA256]::Create()
-  return ((($a.ComputeHash($raw)) | ForEach-Object { $_.ToString('x2') }) -join '')
-}
-Get-FileSha (Join-Path $ws '话题文件.md')
-```
-> **同一段文本，含不含末尾换行会得到两个不同哈希**——确认时**必须写明范围边界**（是整文件字节，还是某个区间）。
-> **哈希只证明「相同范围的字节」**，不替代首次理解与审查。
-
-## 3. 原子锁模板（**必须带 try/finally 与 `$acquired` 保护**）
-
-```powershell
-$lock = Join-Path $ws '._交流锁'
-$acquired = $false; $stream = $null; $writer = $null
-
-# ① 抢锁：CreateNew 是原子操作。失败只表示「锁已被他人持有」——
-#    不要把临界区里的其它错误也解释成抢锁失败。
+$lockPath = Join-Path $sharedRoot '._交流锁'
+$held = $null
 try {
-  $stream = [System.IO.File]::Open($lock,[System.IO.FileMode]::CreateNew,[System.IO.FileAccess]::Write,[System.IO.FileShare]::None)
-  $acquired = $true
-} catch {
-  Write-Output '抢锁失败（锁已被他人持有）→ 放弃本次写入，不触碰锁文件'
-}
-
-# ② 只有拿到锁才进入临界区；临界区异常**照常上抛**（不吞），finally 只释放**自己的**锁
-if($acquired){
-  try {
-    $writer = New-Object System.IO.StreamWriter($stream,(New-Object System.Text.UTF8Encoding($false)))
-    $writer.Write('holder'); $writer.Flush()
-
-    # —— 临界区（保持短）：读 → 改 → 写 ——
-    $target = Join-Path $ws '话题文件.md'
-    $text = [System.IO.File]::ReadAllText($target,[System.Text.Encoding]::UTF8)
-    [System.IO.File]::WriteAllText($target, $text + "`r`n新内容", (New-Object System.Text.UTF8Encoding($false)))
-  }
-  finally {
-    if($writer){ $writer.Dispose() }
-    if($stream){ $stream.Dispose() }
-    Remove-Item -LiteralPath $lock -Force -ErrorAction SilentlyContinue   # 只删自己持有的锁
-    $acquired = $false
-  }
+  $held = [IO.File]::Open($lockPath,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None)
+  $target = Join-Path $sharedRoot '当前话题.md'
+  $body = @'
+需追加的字面正文
+'@
+  [IO.File]::AppendAllText($target,$body,[Text.UTF8Encoding]::new($false))
+} finally {
+  if ($null -ne $held) { $held.Dispose(); Remove-Item -LiteralPath $lockPath }
 }
 ```
 
-**三场景自测**（改锁代码后各跑一次；**在临时目录里跑并清理**）：
-1. **正常**：无锁 → 能拿到、写入成功、退出后锁消失；
-2. **他人持有**：已存在锁 → 放弃、**不删别人的锁**、目标文件不变；
-3. **临界区异常**：读一个不存在的文件 → **异常照常上抛（非零退出）**，而**自有锁必须被释放**（这正是 `finally` 的作用）。
+模板假设所有协作方都不删除/替换他方锁；它不是非协作进程的安全防护。锁内只做短读写；需要读改写时整个序列同锁。含反引号不用双引号here-string；单引号不插值，动态字段用明确替换/拼接。
 
-> **教训（实测）**：没有 `try/finally` 时，**临界区一抛异常，自有锁就残留**——而残留锁会让后续所有写入被拒。**自测必须在临时目录里做，不要污染共享目录。**
-## 4. 消息模板
+## 回读
 
-```
-[YYYY-MM-DD HH:mm] <发送方> → <接收方>：[id=<前缀>-<话题>-<序号>] [type=<类型>] [reply_to=<id>]
+核对目标路径、关键内容、UTF-8严格解码、无BOM、无U+FFFD/意外C0/DEL；CRLF不是裸CR。文档与Python采用无BOM；Windows PowerShell 5.1执行含中文.ps1时须使用能正确解码UTF-8的入口，不能默认ANSI读取。哈希声明整文件字节或确切区间、含不含末尾换行。
 
-（正文：一句自包含摘要 + 依据；需要行动时写清对象、范围、期限与恢复条件）
-```
+## 可恢复归档
 
-## 5. 轮次收尾清单
+确认实际路径和当前轮范围；持锁重读→保存原文全文到唯一归档名→回读核对→以**相同范围**精简在用文件→更新导航。任一步失败保留原件，不能清空未确认归档的内容。临时文件、锁与客户端私有记忆不发布。冻结历史不为通过检测而改写。
 
-- [ ] 各自简短复盘，把修正写回约定文本；
-- [ ] **调整并归档文件夹内容**：当轮话题文件与聊天记录 → 归档目录；**导航按实际路径更新并回读**；
-- [ ] 共享归档：**写入 → 回读核对实际参与者记录完整 → 才清空**（**仅执行一次**，由唯一记录者做）；
-- [ ] 全文编码与控制字符检查；
-- [ ] 未完成事项表状态更新（**历史完成行可保留**）。
+修改锁/归档代码时，在临时目录验证正常、他方持锁、临界区异常三种路径；检索判据用已知正例和反例自检，字符串匹配只是筛查。
