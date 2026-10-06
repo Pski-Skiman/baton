@@ -137,7 +137,7 @@ def main():
     missing_sig = [{"party": q, "file": os.path.relpath(p, root_abs), "status": "no-matching-signature"}
                    for p in paths for q in parties if base[p]["sigs"].get(q) is None]
     last_other = time.monotonic()
-    log("START", version="0.4", me=me, window_sec=a.window, interval_sec=a.interval,
+    log("START", version="0.5", me=me, window_sec=a.window, interval_sec=a.interval,
         max_minutes=a.max_minutes, files=len(paths), parties=parties,
         baseline_ids=sum(len(base[p]["snap"]["ids"]) for p in paths),
         signature_missing=missing_sig,
